@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge – Video Editor</title>
+<link rel="stylesheet" href="style.css?v=11">
+</head>
+<body>
+<header>
+  <div class="brand">🎬 ClipForge</div>
+  <div class="spacer"></div>
+  <label class="inline">Canvas
+    <select id="res">
+      <option value="1280x720">1280×720 (16:9)</option>
+      <option value="1920x1080">1920×1080 (16:9)</option>
+      <option value="1080x1920">1080×1920 (9:16)</option>
+      <option value="1080x1080">1080×1080 (1:1)</option>
+      <option value="854x480">854×480 (SD)</option>
+    </select>
+  </label>
+  <button id="btn-open">Open project</button>
+  <button id="btn-save">Save project</button>
+  <label class="inline">Format
+    <select id="export-fmt" title="Output video format">
+      <option value="mp4" selected>MP4 (.mp4)</option>
+      <option value="webm">WebM (.webm)</option>
+    </select>
+  </label>
+  <button id="btn-export-range" hidden title="Export only the marked Start → Finish section">Export range</button>
+  <button id="btn-export" class="primary">Export MP4</button>
+</header>
+
+<main>
+  <aside id="library-panel">
+    <div class="panel-head">
+      <h2>Media</h2>
+      <button id="btn-import">+ Import</button>
+      <button id="btn-text">+ Text</button>
+    </div>
+    <div id="library" class="library"></div>
+    <p class="hint">Drag media onto the timeline, or double-click to append it. You can also drop files anywhere in the window.</p>
+  </aside>
+
+  <section id="preview-panel">
+    <div class="stage">
+      <canvas id="stage" width="1280" height="720"></canvas>
+      <div id="cut-stage-tint" hidden></div>
+      <div id="cut-preview-pill" class="cut-preview-pill" hidden></div>
+      <div id="crop-layer" hidden>
+        <div id="crop-box">
+          <span class="ch nw" data-ch="nw"></span>
+          <span class="ch n" data-ch="n"></span>
+          <span class="ch ne" data-ch="ne"></span>
+          <span class="ch e" data-ch="e"></span>
+          <span class="ch se" data-ch="se"></span>
+          <span class="ch s" data-ch="s"></span>
+          <span class="ch sw" data-ch="sw"></span>
+          <span class="ch w" data-ch="w"></span>
+        </div>
+        <div class="crop-bar">
+          <span>Crop frame:</span>
+          <select id="crop-ratio" title="Crop aspect ratio">
+            <option value="free">Freeform</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+            <option value="1:1">1:1</option>
+            <option value="4:3">4:3</option>
+          </select>
+          <button id="crop-all" title="Apply this frame crop to every clip from start to finish">Apply start→finish</button>
+          <button id="crop-reset">Reset</button>
+          <button id="crop-done" class="primary">Done</button>
+        </div>
+      </div>
+    </div>
+    <div class="seek-row">
+      <input id="seek-bar" type="range" min="0" max="1" step="0.01" value="0" title="Scrub play pointer across entire video">
+    </div>
+    <div class="transport">
+      <button id="t-start" title="Go to start (Home)">⏮</button>
+      <button id="t-back" title="Back 1 frame (←)">◀︎</button>
+      <button id="t-play" class="primary" title="Play / pause (Space)">▶</button>
+      <button id="t-fwd" title="Forward 1 frame (→)">▶︎</button>
+      <button id="t-end" title="Go to end (End)">⏭</button>
+      <button id="t-play-range" hidden title="Preview only the Start → Finish range">▶ Play range</button>
+      <div class="speed-pills" role="group" aria-label="Playback speed">
+        <button class="spd" data-rate="0.5" title="0.5× preview speed">0.5×</button>
+        <button class="spd active" data-rate="1" title="1× normal preview speed">1×</button>
+        <button class="spd" data-rate="1.5" title="1.5× preview speed">1.5×</button>
+        <button class="spd" data-rate="2" title="2× preview speed">2×</button>
+        <button class="spd" data-rate="2.5" title="2.5× preview speed">2.5×</button>
+      </div>
+      <span id="timecode" class="timecode">00:00.00 / 00:00.00</span>
+      <span id="range-badge" class="range-badge" hidden></span>
+    </div>
+  </section>
+
+  <aside id="inspector-panel">
+    <div class="panel-head"><h2>Properties</h2></div>
+    <div id="inspector"></div>
+  </aside>
+</main>
+
+<section id="timeline-panel">
+  <div class="tl-toolbar">
+    <button id="b-undo" title="Undo (Ctrl+Z)">↶ Undo</button>
+    <button id="b-redo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+    <span class="sep"></span>
+    <button id="b-cut-tool" class="danger-outline" title="Razor / Drag-Cut tool: click & drag from Point A to Point B right on any video clip to slice out a section (R)">✂ Drag-Cut Tool</button>
+    <button id="b-split" title="Split clip at playhead (S)">✂ Split</button>
+    <button id="b-in" class="danger-outline" title="Set Point A (start of cut) at playhead (I or [)">[ Cut Start (A)</button>
+    <button id="b-out" class="danger-outline" title="Set Point B (end of cut) at playhead (O or ])">Cut End (B) ]</button>
+    <button id="b-cut-range" class="danger-outline" title="Delete Point A → Point B and stitch before + after together (X)">✂ Cut Out A→B</button>
+    <button id="b-apply-cut" class="danger-solid" hidden title="Delete the red section (A→B) and stitch video together (Enter)">✂ Cut & Stitch</button>
+    <button id="b-clear-range" hidden title="Clear Point A / B selection (Esc)">✕ Clear</button>
+    <span class="sep"></span>
+    <button id="b-trim-start" title="Select from 0:00 up to playhead for removal">⇥ Cut 0:00→Here</button>
+    <button id="b-trim-end" title="Select from playhead to end of video for removal">⇤ Cut Here→End</button>
+    <button id="b-keep-range" class="accent-outline" title="Keep ONLY Point A → Point B and remove everything before A & after B">✂ Keep Only A→B</button>
+    <span class="sep"></span>
+    <button id="b-dup" title="Duplicate (Ctrl+D)">⧉ Duplicate</button>
+    <button id="b-del" title="Delete clip (Del)">🗑 Delete</button>
+    <button id="b-ripple" title="Delete clip and close gap (Shift+Del)">🗑 Ripple</button>
+    <span class="sep"></span>
+    <button id="b-crop-mode" title="Crop video/image frame interactively (C)">⌗ Crop Frame</button>
+    <div class="spacer"></div>
+    <button id="b-page-prev" title="Previous timeline page (PageUp)">◀ Page</button>
+    <button id="b-center-ph" title="Jump view to play pointer">⌖ Pointer</button>
+    <button id="b-page-next" title="Next timeline page (PageDown)">Page ▶</button>
+    <button id="b-fit" title="Zoom to fit entire video on one page">↔ Fit</button>
+    <label class="inline">Zoom <input id="zoom" type="range" min="0" max="100" value="80"></label>
+  </div>
+  <div id="timeline">
+    <div id="heads"></div>
+    <div id="scroll"><div id="content"></div></div>
+  </div>
+</section>
+
+<input type="file" id="file-media" hidden multiple accept="video/*,audio/*,image/*">
+<input type="file" id="file-project" hidden accept=".json,application/json">
+
+<div id="modal" hidden>
+  <div class="dialog">
+    <h3 id="modal-title">Exporting…</h3>
+    <p id="modal-text">Rendering in real time. Keep this tab in the foreground.</p>
+    <div class="bar"><div id="modal-bar"></div></div>
+    <button id="modal-cancel">Cancel</button>
+    <div id="modal-done-btns" class="btns" hidden>
+      <button id="modal-download" class="primary">⬇ Download again</button>
+      <button id="modal-save-as">Save As…</button>
+      <button id="modal-close">Close</button>
+    </div>
+  </div>
+</div>
+<div id="toast" hidden></div>
+
+<script src="app.js?v=11"></script>
+</body>
+</html>
