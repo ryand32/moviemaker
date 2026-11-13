@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ClipForge – Video Editor</title>
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=13">
 </head>
-<body>
+<body data-tab="editor">
 <header>
   <div class="brand">🎬 ClipForge</div>
   <div class="spacer"></div>
@@ -34,12 +34,34 @@
 <main>
   <aside id="library-panel">
     <div class="panel-head">
-      <h2>Media</h2>
-      <button id="btn-import">+ Import</button>
-      <button id="btn-text">+ Text</button>
+      <h2>Media &amp; Overlays</h2>
+      <button id="btn-import" title="Import video, image, or audio files">+ Media</button>
+      <button id="btn-image" title="Import &amp; overlay an image, photo, or PNG logo at playhead">+ Image</button>
+      <button id="btn-text" title="Add text overlay at playhead">+ Text</button>
+    </div>
+    <div class="lib-filters" role="group" aria-label="Filter media">
+      <button class="flt active" data-flt="all">All</button>
+      <button class="flt" data-flt="video">Video</button>
+      <button class="flt" data-flt="image">Images</button>
+      <button class="flt" data-flt="audio">Audio</button>
     </div>
     <div id="library" class="library"></div>
-    <p class="hint">Drag media onto the timeline, or double-click to append it. You can also drop files anywhere in the window.</p>
+    <div class="extras-box">
+      <div class="extras-title">Shapes, Callouts &amp; Stickers</div>
+      <div id="shape-palette" class="shape-palette">
+        <button data-shape="rect" title="Highlight rectangle frame">⬜ Box</button>
+        <button data-shape="circle" title="Highlight circle ring">⭕ Circle</button>
+        <button data-shape="arrow" title="Directional arrow">➜ Arrow</button>
+        <button data-shape="solid" title="Solid blackout / censor bar">⬛ Censor</button>
+        <button data-badge="NEW" title="Text callout badge">💬 Callout</button>
+        <button data-sticker="⭐" title="Star sticker">⭐</button>
+        <button data-sticker="🔥" title="Fire sticker">🔥</button>
+        <button data-sticker="✅" title="Check sticker">✅</button>
+        <button data-sticker="⚠️" title="Warning sticker">⚠️</button>
+        <button data-sticker="👍" title="Thumbs up sticker">👍</button>
+      </div>
+    </div>
+    <p class="hint">Drop files anywhere, paste images with <b>Ctrl+V</b>, or drag overlays directly on the preview.</p>
   </aside>
 
   <section id="preview-panel">
@@ -136,7 +158,14 @@
   </div>
 </section>
 
+<nav id="mobile-tabs" class="mobile-tabs" aria-label="Workspace sections">
+  <button type="button" class="m-tab active" data-mtab="editor">🎬 Editor</button>
+  <button type="button" class="m-tab" data-mtab="media">📁 Media &amp; Add</button>
+  <button type="button" class="m-tab" data-mtab="props">⚙ Properties <span id="m-props-dot" class="m-dot" hidden></span></button>
+</nav>
+
 <input type="file" id="file-media" hidden multiple accept="video/*,audio/*,image/*">
+<input type="file" id="file-image" hidden multiple accept="image/*">
 <input type="file" id="file-project" hidden accept=".json,application/json">
 
 <div id="modal" hidden>
@@ -154,6 +183,6 @@
 </div>
 <div id="toast" hidden></div>
 
-<script src="app.js?v=11"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

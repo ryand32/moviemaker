@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const round = (v, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 
 const TRACKS = [
-  { id: 'v2', name: 'Video 2', kind: 'visual' },
+  { id: 'v2', name: 'Overlay (V2)', kind: 'visual' },
   { id: 'v1', name: 'Video 1', kind: 'visual' },
   { id: 'a1', name: 'Audio 1', kind: 'audio' },
   { id: 'a2', name: 'Audio 2', kind: 'audio' },
@@ -23,7 +23,7 @@ const FONTS = ['Segoe UI, Arial, sans-serif', 'Georgia, serif', 'Consolas, monos
 
 const state = {
   media: [], clips: [], time: 0, selected: null, pps: 80, playing: false, playRate: 1,
-  settings: { w: 1280, h: 720 }, trackOff: {},
+  settings: { w: 1280, h: 720 }, trackOff: {}, mediaFilter: 'all',
   rangeIn: null, rangeOut: null, rangeMode: 'cut', hoverCut: null, cutTool: false,
   cropMode: false, cropAspect: 'free', playStopAt: null,
 };
@@ -105,6 +105,7 @@ function defaults(c) {
     cropL: 0, cropT: 0, cropR: 0, cropB: 0, fit: 'contain',
     brightness: 100, contrast: 100, saturate: 100, grayscale: 0, blur: 0,
     text: 'Your text', size: 72, color: '#ffffff', font: FONTS[0], bold: true, outline: true,
+    bgBox: false, bgColor: '#e03131', shapeKind: 'rect', strokeW: 8, wRatio: 160,
   }, c);
 }
 
@@ -131,6 +132,29 @@ function restore(json) {
 function undo() { if (!undoStack.length) return; redoStack.push(lastSaved); restore(undoStack.pop()); updateHistoryButtons(); }
 function redo() { if (!redoStack.length) return; undoStack.push(lastSaved); restore(redoStack.pop()); updateHistoryButtons(); }
 
+function setMobileTab(tab) {
+  document.body.dataset.tab = tab;
+  for (const b of document.querySelectorAll('.mobile-tabs .m-tab')) {
+    b.classList.toggle('active', b.dataset.mtab === tab);
+  }
+  if (tab === 'editor') {
+    requestAnimationFrame(() => {
+      refreshLayoutCache();
+      renderTimeline();
+      render();
+      updateTime();
+    });
+  }
+}
+
+function updateMobileDots() {
+  const dot = $('#m-props-dot');
+  if (dot) dot.hidden = !(state.selected || hasRange());
+}
+
+const liveRulerH = () => $('#ruler')?.offsetHeight || RULER_H;
+const liveTrackH = () => document.querySelector('.track')?.offsetHeight || TRACK_H;
+
 function afterEdit() {
   if (state.selected && !selClip()) state.selected = null;
   if (state.cropMode && !cropTargetClip(false)) state.cropMode = false;
@@ -138,6 +162,7 @@ function afterEdit() {
   renderTimeline();
   updateRangeUI();
   buildInspector();
+  updateMobileDots();
   syncMedia();
   render();
   updateTime();
@@ -207,26 +232,46 @@ async function loadPeaks(m) {
   } catch { /* no decodable audio track */ }
 }
 
-async function importFiles(files) {
-  let added = 0;
+function detectMediaType(f) {
+  const t = (f.type || '').split('/')[0];
+  if (['video', 'audio', 'image'].includes(t)) return t;
+  const n = f.name || '';
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i.test(n)) return 'image';
+  if (/\.(mp4|webm|mov|mkv|m4v|avi|ogv)$/i.test(n)) return 'video';
+  if (/\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(n)) return 'audio';
+  return '';
+}
+
+async function importFiles(files, placeAtPlayhead = false) {
+  const imported = [];
   for (const f of files) {
-    const type = f.type.split('/')[0];
-    if (!['video', 'audio', 'image'].includes(type)) { toast(`Unsupported file: ${f.name}`); continue; }
-    const m = { id: uid(), name: f.name, type, file: f, url: URL.createObjectURL(f), duration: IMAGE_DUR, thumb: null, peaks: null };
+    const type = detectMediaType(f);
+    if (!type) { toast(`Unsupported file: ${f.name}`); continue; }
+    const m = { id: uid(), name: f.name || `${type}-${uid().slice(0, 4)}`, type, file: f, url: URL.createObjectURL(f), duration: IMAGE_DUR, thumb: null, peaks: null };
     try { await probe(m); } catch (e) {
       URL.revokeObjectURL(m.url);
-      toast(`Could not read ${f.name} (${e.message})`);
+      toast(`Could not read ${m.name} (${e.message})`);
       continue;
     }
     state.media.push(m);
-    added++;
+    imported.push(m);
   }
-  if (added) { relink(); renderLibrary(); afterEdit(); toast(`Imported ${added} file${added > 1 ? 's' : ''}`); }
+  if (imported.length) {
+    relink();
+    renderLibrary();
+    if (placeAtPlayhead) {
+      for (const m of imported) addMedia(m, undefined, state.time, true);
+    } else {
+      afterEdit();
+      toast(`Imported ${imported.length} file${imported.length > 1 ? 's' : ''}`);
+    }
+  }
+  return imported;
 }
 
 function relink() {
   for (const c of state.clips) {
-    if (c.type === 'text' || mediaOf(c)) continue;
+    if (c.type === 'text' || c.type === 'shape' || mediaOf(c)) continue;
     const m = state.media.find(m => m.name === c.mediaName && m.type === c.type);
     if (m) c.mediaId = m.id;
   }
@@ -235,19 +280,22 @@ function relink() {
 function renderLibrary() {
   const lib = $('#library');
   lib.innerHTML = '';
-  if (!state.media.length) {
+  const shown = state.media.filter(m => state.mediaFilter === 'all' || m.type === state.mediaFilter);
+  if (!shown.length) {
     const p = document.createElement('p');
     p.className = 'hint'; p.style.gridColumn = '1/-1';
-    p.textContent = 'No media yet. Click “+ Import” or drop files here.';
+    p.textContent = state.media.length
+      ? `No ${state.mediaFilter} files imported yet.`
+      : 'No media yet. Click “+ Media” / “+ Image”, drop files, or press Ctrl+V to paste an image.';
     lib.append(p);
   }
-  for (const m of state.media) {
+  for (const m of shown) {
     const card = document.createElement('div');
     card.className = 'card'; card.draggable = true;
     const th = document.createElement('div');
     th.className = 'thumb';
     if (m.thumb) th.style.backgroundImage = `url("${m.thumb}")`;
-    else th.textContent = m.type === 'audio' ? '🎵' : '🎞';
+    else th.textContent = m.type === 'audio' ? '🎵' : (m.type === 'image' ? '🖼' : '🎞');
     const meta = document.createElement('div');
     meta.className = 'meta';
     const name = document.createElement('div');
@@ -256,12 +304,26 @@ function renderLibrary() {
     dur.className = 'dur';
     dur.textContent = m.type === 'image' ? `Image ${m.w}×${m.h}` : `${fmt(m.duration, 1)}${m.type === 'video' ? ` · ${m.w}×${m.h}` : ''}`;
     meta.append(name, dur);
+    const addBtn = document.createElement('button');
+    addBtn.className = 'add-ph'; addBtn.textContent = '+';
+    addBtn.title = m.type === 'image' ? 'Overlay image at playhead' : 'Add at playhead';
+    addBtn.onclick = e => {
+      e.stopPropagation();
+      addMedia(m, undefined, state.time, m.type === 'image');
+      if (window.innerWidth <= 960) setMobileTab('editor');
+    };
     const x = document.createElement('button');
     x.className = 'x'; x.textContent = '✕'; x.title = 'Remove from library';
     x.onclick = e => { e.stopPropagation(); removeMedia(m); };
-    card.append(th, meta, x);
+    card.append(th, meta, addBtn, x);
     card.addEventListener('dragstart', e => e.dataTransfer.setData('application/x-clip-media', m.id));
     card.addEventListener('dblclick', () => addMedia(m));
+    card.addEventListener('click', () => {
+      if (window.innerWidth <= 960) {
+        addMedia(m, undefined, m.type === 'image' ? state.time : undefined, m.type === 'image');
+        setMobileTab('editor');
+      }
+    });
     lib.append(card);
   }
 }
@@ -289,12 +351,24 @@ function fitPosition(c, want) {
 
 const trackEnd = id => state.clips.filter(c => c.track === id).reduce((m, c) => Math.max(m, c.start + c.dur), 0);
 
-function addMedia(m, trackId, start) {
+function addMedia(m, trackId, start, asOverlay = false) {
   const wasEmpty = state.clips.length === 0;
   const kind = m.type === 'audio' ? 'audio' : 'visual';
-  const tr = TRACKS.find(t => t.id === trackId && t.kind === kind) || TRACKS.find(t => t.kind === kind);
-  const c = defaults({ type: m.type, mediaId: m.id, mediaName: m.name, track: tr.id, dur: m.type === 'image' ? IMAGE_DUR : m.duration });
-  c.start = fitPosition(c, start ?? trackEnd(tr.id));
+  const hasBaseVisual = state.clips.some(c => c.track === 'v1');
+  let defaultTrackId = kind === 'audio' ? 'a1' : 'v1';
+  let overlayImage = false;
+  if (m.type === 'image' && (asOverlay || (trackId === undefined && hasBaseVisual))) {
+    defaultTrackId = 'v2';
+    overlayImage = true;
+  }
+  const tr = TRACKS.find(t => t.id === trackId && t.kind === kind) || TRACKS.find(t => t.id === defaultTrackId) || TRACKS.find(t => t.kind === kind);
+  const c = defaults({
+    type: m.type, mediaId: m.id, mediaName: m.name, track: tr.id,
+    dur: m.type === 'image' ? IMAGE_DUR : m.duration,
+    scale: overlayImage && tr.id === 'v2' && hasBaseVisual ? 40 : 100,
+  });
+  const wantStart = start ?? (overlayImage ? state.time : trackEnd(tr.id));
+  c.start = fitPosition(c, wantStart);
   state.clips.push(c);
   state.selected = c.id;
   if (wasEmpty && c.dur > 25) {
@@ -303,14 +377,32 @@ function addMedia(m, trackId, start) {
     if ($('#zoom')) $('#zoom').value = ppsToSlider(state.pps);
   }
   commit(); afterEdit();
+  if (overlayImage && hasBaseVisual) toast(`Added "${m.name}" on Overlay (V2) — drag it right on the video preview to position`);
 }
 
-function addText() {
-  const c = defaults({ type: 'text', track: 'v2', dur: TEXT_DUR });
+function addText(initial = {}) {
+  const c = defaults(Object.assign({ type: 'text', track: 'v2', dur: TEXT_DUR }, initial));
   c.start = fitPosition(c, state.time);
   state.clips.push(c);
   state.selected = c.id;
   commit(); afterEdit();
+  if (window.innerWidth <= 960) setMobileTab('editor');
+}
+
+function addShape(shapeKind) {
+  const presets = {
+    rect: { shapeKind: 'rect', color: '#ff4d5e', strokeW: 8, scale: 45, wRatio: 160 },
+    circle: { shapeKind: 'circle', color: '#ffca3a', strokeW: 8, scale: 40, wRatio: 100 },
+    arrow: { shapeKind: 'arrow', color: '#3ddc97', strokeW: 10, scale: 45, wRatio: 160 },
+    solid: { shapeKind: 'solid', color: '#000000', strokeW: 0, scale: 35, wRatio: 220 },
+  };
+  const c = defaults(Object.assign({ type: 'shape', track: 'v2', dur: TEXT_DUR }, presets[shapeKind] || presets.rect));
+  c.start = fitPosition(c, state.time);
+  state.clips.push(c);
+  state.selected = c.id;
+  commit(); afterEdit();
+  if (window.innerWidth <= 960) setMobileTab('editor');
+  toast('Added shape overlay — drag it on the preview canvas to position');
 }
 
 function splitAt(t) {
@@ -362,6 +454,7 @@ function select(id) {
   }
   renderTimeline();
   buildInspector();
+  updateMobileDots();
   render();
 }
 
@@ -524,6 +617,7 @@ function updateRangeUI() {
     if (applyBtn) applyBtn.hidden = true;
     if (playRangeBtn) playRangeBtn.hidden = true;
     if (expRangeBtn) expRangeBtn.hidden = true;
+    updateMobileDots();
     updateStageCutOverlay();
     return;
   }
@@ -600,6 +694,7 @@ function updateRangeUI() {
     if (document.activeElement !== hmsInputs[0]) hmsInputs[0].value = fmtHMS(r0);
     if (document.activeElement !== hmsInputs[1]) hmsInputs[1].value = fmtHMS(r1);
   }
+  updateMobileDots();
   updateStageCutOverlay();
 }
 
@@ -973,7 +1068,7 @@ function getEl(c) {
   let r = runtime.get(c.id);
   if (r) return r;
   const m = mediaOf(c);
-  if (!m || c.type === 'text') return null;
+  if (!m || c.type === 'text' || c.type === 'shape') return null;
   let el;
   if (c.type === 'image') { el = new Image(); el.src = m.url; }
   else {
@@ -1129,18 +1224,54 @@ function drawClip(c, t) {
   g.scale(c.flipH ? -1 : 1, c.flipV ? -1 : 1);
   const s = c.scale / 100;
 
+  let boxW = 0, boxH = 0;
   if (c.type === 'text') {
     const px = c.size * s * H / 720;
     g.font = `${c.bold ? 700 : 400} ${px}px ${c.font}`;
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillStyle = c.color;
     g.lineJoin = 'round';
     const lines = String(c.text).split('\n'), lh = px * 1.2;
+    const maxLineW = lines.reduce((m, ln) => Math.max(m, g.measureText(ln).width), 0);
+    boxW = maxLineW + px * 0.8;
+    boxH = lines.length * lh + px * 0.5;
+    if (c.bgBox) {
+      g.fillStyle = c.bgColor || '#e03131';
+      const rx = -boxW / 2, ry = -boxH / 2, rad = Math.min(18, px * 0.25);
+      g.beginPath();
+      if (g.roundRect) g.roundRect(rx, ry, boxW, boxH, rad);
+      else g.rect(rx, ry, boxW, boxH);
+      g.fill();
+    }
+    g.fillStyle = c.color;
     lines.forEach((ln, i) => {
       const y = (i - (lines.length - 1) / 2) * lh;
-      if (c.outline) { g.lineWidth = px / 8; g.strokeStyle = 'rgba(0,0,0,.85)'; g.strokeText(ln, 0, y); }
+      if (c.outline && !c.bgBox) { g.lineWidth = px / 8; g.strokeStyle = 'rgba(0,0,0,.85)'; g.strokeText(ln, 0, y); }
       g.fillText(ln, 0, y);
     });
+  } else if (c.type === 'shape') {
+    const baseH = H * 0.28 * s;
+    const baseW = baseH * ((c.wRatio || 160) / 100);
+    boxW = baseW; boxH = baseH;
+    const lw = Math.max(2, (c.strokeW || 8) * H / 720);
+    g.strokeStyle = c.color;
+    g.fillStyle = c.color;
+    g.lineWidth = lw;
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    if (c.shapeKind === 'solid') {
+      g.fillRect(-baseW / 2, -baseH / 2, baseW, baseH);
+    } else if (c.shapeKind === 'circle') {
+      g.beginPath();
+      g.ellipse(0, 0, baseW / 2, baseH / 2, 0, 0, Math.PI * 2);
+      g.stroke();
+    } else if (c.shapeKind === 'arrow') {
+      const x0 = -baseW / 2, x1 = baseW / 2, head = Math.min(baseW * 0.35, baseH * 0.55);
+      g.beginPath();
+      g.moveTo(x0, 0); g.lineTo(x1, 0);
+      g.moveTo(x1 - head, -head * 0.7); g.lineTo(x1, 0); g.lineTo(x1 - head, head * 0.7);
+      g.stroke();
+    } else {
+      g.strokeRect(-baseW / 2, -baseH / 2, baseW, baseH);
+    }
   } else {
     const r = getEl(c);
     const el = r?.el;
@@ -1156,10 +1287,19 @@ function drawClip(c, t) {
         const k = c.fit === 'cover' ? Math.max(W / cw, H / ch) : Math.min(W / cw, H / ch);
         dw = cw * k; dh = ch * k;
       }
+      boxW = dw * s; boxH = dh * s;
       const fs = filterString(c);
       if (fs !== 'none') g.filter = fs;
       g.drawImage(el, sx, sy, cw, ch, -dw * s / 2, -dh * s / 2, dw * s, dh * s);
     }
+  }
+  if (!exp && !state.playing && c.id === state.selected && boxW > 0 && (c.track === 'v2' || c.type !== 'video' || c.scale < 99)) {
+    g.filter = 'none';
+    g.globalAlpha = 0.9;
+    g.strokeStyle = '#4f8cff';
+    g.lineWidth = Math.max(2, H / 320);
+    g.setLineDash([8, 6]);
+    g.strokeRect(-boxW / 2 - 4, -boxH / 2 - 4, boxW + 8, boxH + 8);
   }
   g.restore();
 }
@@ -1551,7 +1691,7 @@ function renderTimeline() {
     const m = mediaOf(c);
     const el = document.createElement('div');
     const isStitched = isTimed(c) && c.in > 0.05 && c.start > 0.05;
-    el.className = `clip ${c.type}` + (c.id === state.selected ? ' selected' : '') + (isStitched ? ' stitched' : '') + (c.type !== 'text' && !m ? ' missing' : '');
+    el.className = `clip ${c.type}` + (c.id === state.selected ? ' selected' : '') + (isStitched ? ' stitched' : '') + (c.type !== 'text' && c.type !== 'shape' && !m ? ' missing' : '');
     el.style.left = c.start * pps + 'px';
     el.style.width = Math.max(3, c.dur * pps) + 'px';
     if (m?.thumb && isVisual(c)) el.style.backgroundImage = `url("${m.thumb}")`;
@@ -1560,6 +1700,7 @@ function renderTimeline() {
     const label = document.createElement('span');
     label.className = 'label';
     if (c.type === 'text') label.textContent = c.text;
+    else if (c.type === 'shape') label.textContent = `Shape (${c.shapeKind})`;
     else if (!m) label.textContent = `Missing: ${c.mediaName}`;
     else if (isTimed(c) && (c.in > 0.05 || c.dur * c.speed < m.duration - 0.08)) {
       const srcEnd = c.in + c.dur * c.speed;
@@ -1620,7 +1761,7 @@ function startDrag(e, c, mode) {
       const da = a === null ? Infinity : Math.abs(a - s), db = b === null ? Infinity : Math.abs(b - (s + c.dur));
       if (da <= db && a !== null) s = a; else if (b !== null) s = b - c.dur;
       const rect = content.getBoundingClientRect();
-      const row = Math.floor((ev.clientY - rect.top - RULER_H) / TRACK_H);
+      const row = Math.floor((ev.clientY - rect.top - liveRulerH()) / liveTrackH());
       const tr = TRACKS[row];
       if (tr && tr.kind === trackKind(c)) c.track = tr.id;
       c.start = fitPosition(c, Math.max(0, s));
@@ -1861,7 +2002,7 @@ function buildInspector() {
   const group = t => { const d = document.createElement('div'); d.className = 'group'; d.textContent = t; box.append(d); };
 
   if (c.type === 'text') {
-    group('Text');
+    group('Text / Sticker');
     const ta = document.createElement('textarea');
     ta.value = c.text; ta.setAttribute('aria-label', 'Text');
     ta.oninput = () => { c.text = ta.value; refresh(); };
@@ -1875,15 +2016,70 @@ function buildInspector() {
     box.append(row('Color', col));
     box.append(choice(c, 'Font', 'font', FONTS.map(f => [f, f.split(',')[0].replace(/"/g, '')])));
     box.append(toggle(c, 'Bold', 'bold'), toggle(c, 'Outline', 'outline'));
+    box.append(toggle(c, 'Callout Box', 'bgBox'));
+    const bgCol = document.createElement('input');
+    bgCol.type = 'color'; bgCol.value = c.bgColor || '#e03131';
+    bgCol.oninput = () => { c.bgColor = bgCol.value; render(); };
+    bgCol.onchange = () => commit();
+    box.append(row('Box Color', bgCol));
   }
-  if (!isTimed(c)) box.append(slider(c, 'Duration', 'dur', MIN_DUR, 120, 0.1, setDur));
+  if (c.type === 'shape') {
+    group('Shape');
+    box.append(choice(c, 'Style', 'shapeKind', [['rect', 'Box Frame'], ['circle', 'Circle Ring'], ['arrow', 'Arrow'], ['solid', 'Solid / Censor']]));
+    const scol = document.createElement('input');
+    scol.type = 'color'; scol.value = c.color;
+    scol.oninput = () => { c.color = scol.value; render(); };
+    scol.onchange = () => commit();
+    box.append(row('Color', scol));
+    if (c.shapeKind !== 'solid') box.append(slider(c, 'Thickness', 'strokeW', 2, 40, 1));
+    box.append(slider(c, 'Width %', 'wRatio', 25, 400, 5));
+  }
+  if (!isTimed(c)) {
+    const maxDur = Math.max(120, Math.ceil(duration()) + 30);
+    box.append(slider(c, 'Duration', 'dur', MIN_DUR, maxDur, 0.1, setDur));
+    const spanRow = document.createElement('div');
+    spanRow.className = 'mini-btns';
+    const bSpanAll = document.createElement('button');
+    bSpanAll.textContent = '↔ Span Entire Video';
+    bSpanAll.title = 'Stretch this image/text/shape across the full video length (great for logos/watermarks)';
+    bSpanAll.onclick = () => {
+      const otherMax = state.clips.filter(o => o !== c).reduce((m, o) => Math.max(m, o.start + o.dur), 0);
+      if (otherMax > MIN_DUR) {
+        c.start = 0;
+        c.dur = Math.min(otherMax, nextStart(c));
+        commit(); afterEdit();
+      }
+    };
+    spanRow.append(bSpanAll);
+    box.append(spanRow);
+  }
 
   if (isVisual(c)) {
-    group('Transform');
+    group('Transform & Placement');
+    const posPresets = document.createElement('div');
+    posPresets.className = 'mini-btns';
+    for (const [lbl, px, py, psc] of [
+      ['↖ Top-L', 16, 16, 28],
+      ['↗ Top-R', 84, 16, 28],
+      ['↙ Bot-L', 16, 84, 28],
+      ['↘ Bot-R', 84, 84, 28],
+      ['⌖ Center', 50, 50, null],
+      ['⛶ Full', 50, 50, 100],
+    ]) {
+      const b = document.createElement('button');
+      b.textContent = lbl;
+      b.onclick = () => {
+        c.x = px; c.y = py;
+        if (psc !== null) c.scale = psc;
+        commit(); refresh(); buildInspector();
+      };
+      posPresets.append(b);
+    }
+    box.append(posPresets);
     box.append(slider(c, 'X %', 'x', -50, 150, 0.5), slider(c, 'Y %', 'y', -50, 150, 0.5));
     box.append(slider(c, 'Scale %', 'scale', 5, 400, 1), slider(c, 'Rotate °', 'rotation', -180, 180, 1));
     box.append(toggle(c, 'Flip H', 'flipH'), toggle(c, 'Flip V', 'flipV'));
-    if (c.type !== 'text') box.append(choice(c, 'Fit', 'fit', [['contain', 'Fit'], ['cover', 'Fill'], ['stretch', 'Stretch']]));
+    if (c.type !== 'text' && c.type !== 'shape') box.append(choice(c, 'Fit', 'fit', [['contain', 'Fit'], ['cover', 'Fill'], ['stretch', 'Stretch']]));
     box.append(slider(c, 'Opacity %', 'opacity', 0, 100, 1));
   }
   if (c.type === 'video' || c.type === 'image') {
@@ -1969,14 +2165,14 @@ async function openProject(file) {
     if (data.app !== 'clipforge' || !Array.isArray(data.clips)) throw new Error('not a ClipForge project');
     setPlaying(false);
     const clips = data.clips
-      .filter(c => c && TRACKS.some(t => t.id === c.track) && ['video', 'audio', 'image', 'text'].includes(c.type) && Number.isFinite(c.start) && Number.isFinite(c.dur) && c.dur > 0)
+      .filter(c => c && TRACKS.some(t => t.id === c.track) && ['video', 'audio', 'image', 'text', 'shape'].includes(c.type) && Number.isFinite(c.start) && Number.isFinite(c.dur) && c.dur > 0)
       .map(c => defaults(c));
     state.clips = clips;
     if (data.settings && Number.isFinite(data.settings.w) && Number.isFinite(data.settings.h)) applyResolution(data.settings.w, data.settings.h);
     state.selected = null; state.time = 0;
     relink();
     commit(); afterEdit();
-    const missing = clips.filter(c => c.type !== 'text' && !mediaOf(c)).length;
+    const missing = clips.filter(c => c.type !== 'text' && c.type !== 'shape' && !mediaOf(c)).length;
     toast(missing ? `Opened. ${missing} clip(s) need their media re-imported.` : 'Project opened');
   } catch (e) { toast('Could not open project: ' + e.message); }
 }
@@ -2120,8 +2316,84 @@ buildInspector();
 updateHistoryButtons();
 
 $('#btn-import').onclick = () => $('#file-media').click();
-$('#file-media').onchange = e => { importFiles([...e.target.files]); e.target.value = ''; };
-$('#btn-text').onclick = addText;
+$('#file-media').onchange = e => { importFiles([...e.target.files], false); e.target.value = ''; };
+if ($('#btn-image')) $('#btn-image').onclick = () => $('#file-image').click();
+if ($('#file-image')) $('#file-image').onchange = e => { importFiles([...e.target.files], true); e.target.value = ''; };
+$('#btn-text').onclick = () => addText();
+for (const fb of document.querySelectorAll('.lib-filters .flt')) {
+  fb.onclick = () => {
+    state.mediaFilter = fb.dataset.flt;
+    for (const o of document.querySelectorAll('.lib-filters .flt')) o.classList.toggle('active', o === fb);
+    renderLibrary();
+  };
+}
+if ($('#shape-palette')) {
+  $('#shape-palette').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.shape) addShape(b.dataset.shape);
+    else if (b.dataset.badge) addText({ text: 'NEW', size: 54, bgBox: true, bgColor: '#e03131', color: '#ffffff', y: 82 });
+    else if (b.dataset.sticker) addText({ text: b.dataset.sticker, size: 110, outline: false, bold: false });
+  });
+}
+
+// Direct drag-to-move & wheel-to-scale overlays right on the preview canvas!
+stage.addEventListener('pointerdown', e => {
+  if (state.cropMode || exp) return;
+  const sr = stage.getBoundingClientRect();
+  if (!sr.width || !sr.height) return;
+  const px = ((e.clientX - sr.left) / sr.width) * 100;
+  const py = ((e.clientY - sr.top) / sr.height) * 100;
+  const activeVisuals = [];
+  for (const tr of TRACKS) {
+    if (tr.kind !== 'visual' || state.trackOff[tr.id]) continue;
+    for (const c of state.clips) {
+      if (c.track === tr.id && state.time >= c.start && state.time < c.start + c.dur) activeVisuals.push(c);
+    }
+  }
+  const hit = activeVisuals.find(c => {
+    const half = Math.max(12, (c.scale || 100) * 0.45);
+    return Math.abs(px - c.x) <= half && Math.abs(py - c.y) <= half && (c.track === 'v2' || c.type !== 'video' || c.scale < 99);
+  }) || activeVisuals[0];
+  if (!hit) return;
+  e.preventDefault();
+  select(hit.id);
+  render();
+  const x0 = e.clientX, y0 = e.clientY, origX = hit.x, origY = hit.y;
+  const move = ev => {
+    hit.x = round(clamp(origX + ((ev.clientX - x0) / sr.width) * 100, -50, 150), 1);
+    hit.y = round(clamp(origY + ((ev.clientY - y0) / sr.height) * 100, -50, 150), 1);
+    render();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    commit();
+    buildInspector();
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up, { once: true });
+});
+
+stage.addEventListener('wheel', e => {
+  const c = selClip();
+  if (!c || !isVisual(c) || state.cropMode || exp) return;
+  if (!(c.track === 'v2' || c.type !== 'video' || e.shiftKey)) return;
+  e.preventDefault();
+  c.scale = round(clamp(c.scale * (e.deltaY < 0 ? 1.08 : 1 / 1.08), 5, 400), 1);
+  render();
+  buildInspector();
+  commit();
+}, { passive: false });
+
+window.addEventListener('paste', e => {
+  if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const items = [...(e.clipboardData?.items || [])];
+  const files = items.filter(it => it.kind === 'file').map(it => it.getAsFile()).filter(Boolean);
+  if (files.length) {
+    e.preventDefault();
+    importFiles(files, true);
+  }
+});
 $('#btn-save').onclick = saveProject;
 $('#btn-open').onclick = () => $('#file-project').click();
 $('#file-project').onchange = e => { if (e.target.files[0]) openProject(e.target.files[0]); e.target.value = ''; };
@@ -2327,9 +2599,33 @@ content.addEventListener('drop', e => {
   if (!m) return;
   const rect = content.getBoundingClientRect();
   const start = Math.max(0, (e.clientX - rect.left) / state.pps);
-  const tr = TRACKS[Math.floor((e.clientY - rect.top - RULER_H) / TRACK_H)];
+  const tr = TRACKS[Math.floor((e.clientY - rect.top - liveRulerH()) / liveTrackH())];
   addMedia(m, tr?.id ?? 'none', start);
 });
+
+for (const mb of document.querySelectorAll('.mobile-tabs .m-tab')) {
+  mb.onclick = () => setMobileTab(mb.dataset.mtab);
+}
+
+// Two-finger pinch-to-zoom on timeline for mobile & tablet touchscreens
+let pinchDist0 = 0, pinchPps0 = 80;
+scroller.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    pinchDist0 = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    pinchPps0 = state.pps;
+  }
+}, { passive: true });
+scroller.addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinchDist0 > 10) {
+    e.preventDefault();
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    state.pps = clamp(pinchPps0 * (d / pinchDist0), MIN_PPS, MAX_PPS);
+    if ($('#zoom')) $('#zoom').value = ppsToSlider(state.pps);
+    renderTimeline();
+    centerPlayhead();
+    updateTime();
+  }
+}, { passive: false });
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => {
   e.preventDefault();
